@@ -1,0 +1,35 @@
+name: BugEnchantRemover
+version: '1.0'
+main: top.miragedge.bugenchantremover.BugEnchantRemover
+api-version: '1.21'
+prefix: FE_BugEnchantRemover
+authors: [ F.windEmiko ]
+description: 自动删除数据包带来的错误附魔书
+website: miragedge.top
+commands:
+  bugenchantreload:
+    description: 重载插件配置
+    permission: bugenchantremover.reload
+    usage: /<command>
+  bugenchantscan:
+    description: 手动扫描背包中的异常附魔书
+    permission: bugenchantremover.scan
+    usage: /<command>
+  bugenchanttest:
+    description: 检测手中附魔书的显示名称
+    permission: bugenchantremover.test
+    usage: /<command>
+
+permissions:
+  bugenchantremover.reload:
+    description: 允许重载插件配置
+    default: op
+  bugenchantremover.scan:
+    description: 允许手动扫描背包
+    default: op
+  bugenchantremover.test:
+    description: 允许测试附魔显示名称
+    default: op
+  bugenchantremover.notify:
+    description: 接收清除通知
+    default: true

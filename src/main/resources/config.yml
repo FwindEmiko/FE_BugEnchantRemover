@@ -1,0 +1,26 @@
+# BugEnchantRemover 配置文件
+# 检测附魔ID或翻译键中包含以下关键词的附魔书
+
+# 附魔ID关键词列表（不区分大小写）
+# 检查完整ID、命名空间或键名是否包含这些关键词
+enchant-id-keywords:
+  - "nova_structures"
+
+# 翻译键关键词列表（不区分大小写）
+# 检查翻译键是否包含这些关键词
+translation-key-keywords:
+  - "enchantment.dnt"
+
+# 检查间隔（单位：tick，20tick=1秒）
+check-interval: 21
+
+# 是否在控制台记录清除日志
+log-removals: true
+
+# 是否记录匹配的关键词详情
+log-keyword-matches: true
+
+# 提示消息配置
+messages:
+  actionbar: "已自动清除异常附魔书"
+  log-prefix: "[BugEnchantRemover]"
