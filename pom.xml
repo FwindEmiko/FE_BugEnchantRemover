@@ -35,7 +35,7 @@
     </dependencies>
 
     <build>
-        <finalName>[F][清除异常附魔]FE_BugEnchantRemover</finalName>
+        <finalName>[B][清除异常附魔]BugEnchantRemover</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

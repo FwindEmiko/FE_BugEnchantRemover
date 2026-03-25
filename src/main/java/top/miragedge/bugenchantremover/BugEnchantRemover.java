@@ -49,8 +49,6 @@ public class BugEnchantRemover extends JavaPlugin {
     @Override
     public void onEnable() {
         getLogger().info("BugEnchantRemover 插件已启用");
-        getLogger().info("作者: F.windEmiko");
-        getLogger().info("版本: 1.2 - Paper/Folia 双兼容");
 
         // 加载配置
         loadConfig();

@@ -6,7 +6,7 @@
 ![Java](https://img.shields.io/badge/Java-21-red)
 ![Paper](https://img.shields.io/badge/Paper-1.18%2B-blue)
 ![Folia](https://img.shields.io/badge/Folia-1.20%2B-blue)
-[![Build](https://github.com/FCelestial/FE_BugEnchantRemover/actions/workflows/build.yml/badge.svg)](https://github.com/FCelestial/FE_BugEnchantRemover/actions)
+[![Build](https://github.com/fwindemiko/FE_BugEnchantRemover/actions/workflows/build.yml/badge.svg)](https://github.com/fewindemiko/FE_BugEnchantRemover/actions)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
 **自动检测并移除 Minecraft 数据包带来的异常/不存在附魔书**
