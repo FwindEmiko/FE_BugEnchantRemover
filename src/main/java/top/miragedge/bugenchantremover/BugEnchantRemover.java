@@ -23,6 +23,7 @@ public class BugEnchantRemover extends JavaPlugin {
     private long checkInterval;
     private boolean logRemovals;
     private boolean logKeywordMatches;
+    private boolean removeEnchantedBookOnSingleBug;
 
     // 消息配置
     private Component actionbarMessage;
@@ -93,6 +94,7 @@ public class BugEnchantRemover extends JavaPlugin {
         checkInterval = getConfig().getLong("check-interval", 21L);
         logRemovals = getConfig().getBoolean("log-removals", false);
         logKeywordMatches = getConfig().getBoolean("log-keyword-matches", false);
+        removeEnchantedBookOnSingleBug = getConfig().getBoolean("remove-enchanted-book-on-single-bug", false);
 
         // 加载消息配置
         String actionbarText = getConfig().getString("messages.actionbar", "已自动清除异常附魔");
@@ -102,6 +104,7 @@ public class BugEnchantRemover extends JavaPlugin {
         getLogger().info("已加载 " + enchantIdKeywords.size() + " 个附魔ID关键词");
         getLogger().info("已加载 " + translationKeyKeywords.size() + " 个翻译键关键词");
         getLogger().info("检查间隔: " + checkInterval + " tick");
+        getLogger().info("单异常附魔移除整本附魔书: " + (removeEnchantedBookOnSingleBug ? "开启" : "关闭"));
     }
 
     /**
@@ -245,6 +248,12 @@ public class BugEnchantRemover extends JavaPlugin {
         }
 
         if (item.getType() == Material.ENCHANTED_BOOK) {
+            // 如果配置开启，且附魔书只有一个异常附魔，直接移除整本书
+            if (removeEnchantedBookOnSingleBug && bugEnchantments.size() == 1) {
+                item.setAmount(0);  // 彻底清空物品，而不是设置为AIR
+                return true;
+            }
+
             EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
             if (meta == null) return false;
             for (Enchantment enchant : bugEnchantments.keySet()) {

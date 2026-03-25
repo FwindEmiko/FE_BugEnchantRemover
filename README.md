@@ -9,7 +9,7 @@
 [![Build](https://github.com/fwindemiko/FE_BugEnchantRemover/actions/workflows/build.yml/badge.svg)](https://github.com/fewindemiko/FE_BugEnchantRemover/actions)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-**自动检测并移除 Minecraft 数据包带来的异常/不存在附魔书**
+**自动检测并移除 Minecraft 数据包带来的异常/不存在附魔**
 
 </div>
 
@@ -29,6 +29,7 @@
 | 🎮 **事件响应** | 监听玩家拾取、交互等事件，实时清除异常附魔 |
 | 📝 **灵活配置** | 支持自定义检测关键词 |
 | 📖 **详细日志** | 可配置的日志记录，便于排查问题 |
+| 🗑️ **智能移除** | 可配置当附魔书仅有单个异常附魔时直接移除整本书 |
 
 ## 📋 兼容性
 
@@ -74,6 +75,9 @@ log-removals: true
 
 # 是否记录匹配的关键词详情
 log-keyword-matches: true
+
+# 当附魔书只有一个异常附魔时，直接移除整本书而不是只移除那个异常附魔
+remove-enchanted-book-on-single-bug: false
 
 # 提示消息配置
 messages:

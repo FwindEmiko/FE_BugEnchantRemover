@@ -1,6 +1,6 @@
 # BugEnchantRemover 配置文件
 # 检测附魔ID或翻译键中包含以下关键词的附魔书
-# 可使用指令 /bugenchanttest 获取手中附魔书信息
+# 关键词可使用指令 /bugenchanttest 获取手中附魔书信息，或直接查看数据包文件获取
 
 # 附魔ID关键词列表（不区分大小写）
 # 检查完整ID、命名空间或键名是否包含这些关键词
@@ -20,6 +20,9 @@ log-removals: true
 
 # 是否记录匹配的关键词详情
 log-keyword-matches: true
+
+# 当附魔书只有一个异常附魔时，直接移除整本书而不是只移除那个异常附魔
+remove-enchanted-book-on-single-bug: true
 
 # 提示消息配置
 messages:

@@ -2,7 +2,7 @@ name: BugEnchantRemover
 version: '1.2'
 main: top.miragedge.bugenchantremover.BugEnchantRemover
 api-version: '1.18'
-prefix: FE_BugEnchantRemover
+prefix: BugEnchantRemover
 authors: [ F.windEmiko ]
 description: 自动删除数据包带来的错误附魔书
 website: miragedge.top
