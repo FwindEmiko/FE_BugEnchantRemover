@@ -9,31 +9,53 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.EnchantmentStorageMeta;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
 import java.util.*;
 
 public class BugEnchantRemover extends JavaPlugin {
 
-    private static final Component ACTIONBAR_MESSAGE =
-            Component.text("已自动清除异常附魔书", NamedTextColor.RED);
-
     private final Set<String> enchantIdKeywords = new HashSet<>();
     private final Set<String> translationKeyKeywords = new HashSet<>();
     private long checkInterval;
     private boolean logRemovals;
+    private boolean logKeywordMatches;
+
+    // 消息配置
+    private Component actionbarMessage;
+    private String logPrefix;
+
+    // 服务端类型检测
+    private final boolean isFolia = detectFolia();
+    private BukkitTask checkTask;
+
+    /**
+     * 检测是否为 Folia 服务端
+     * Folia 特有的 ThreadedRegionizer 类只存在于 Folia 服务端中
+     */
+    private boolean detectFolia() {
+        try {
+            // ThreadedRegionizer 是 Folia 特有的调度器核心类
+            Class.forName("io.papermc.paper.threadedregions.ThreadedRegionizer");
+            return true;
+        } catch (ClassNotFoundException e) {
+            return false;
+        }
+    }
 
     @Override
     public void onEnable() {
         getLogger().info("BugEnchantRemover 插件已启用");
         getLogger().info("作者: F.windEmiko");
-        getLogger().info("版本: 1.0.2 - 附魔ID/翻译键检测模式");
+        getLogger().info("版本: 1.2 - Paper/Folia 双兼容");
 
         // 加载配置
         loadConfig();
 
-        // 启动异步检查任务
+        // 启动检查任务
         startCheckTask();
 
         // 注册命令
@@ -41,10 +63,17 @@ public class BugEnchantRemover extends JavaPlugin {
 
         // 注册事件监听器
         setupEventListeners();
+
+        getLogger().info("检测到服务端类型: " + (isFolia ? "Folia" : "Paper") +
+                " | 调度模式: " + (isFolia ? "同步" : "异步"));
     }
 
     @Override
     public void onDisable() {
+        // 取消检查任务
+        if (checkTask != null) {
+            checkTask.cancel();
+        }
         getLogger().info("BugEnchantRemover 插件已禁用");
     }
 
@@ -52,15 +81,11 @@ public class BugEnchantRemover extends JavaPlugin {
      * 加载配置文件
      */
     private void loadConfig() {
-        // 确保配置文件存在
         if (!new File(getDataFolder(), "config.yml").exists()) {
             saveDefaultConfig();
         }
-
-        // 重新加载配置
         reloadConfig();
 
-        // 读取配置
         enchantIdKeywords.clear();
         enchantIdKeywords.addAll(getConfig().getStringList("enchant-id-keywords"));
 
@@ -69,32 +94,80 @@ public class BugEnchantRemover extends JavaPlugin {
 
         checkInterval = getConfig().getLong("check-interval", 21L);
         logRemovals = getConfig().getBoolean("log-removals", false);
+        logKeywordMatches = getConfig().getBoolean("log-keyword-matches", false);
 
-        getLogger().info("已加载 " + enchantIdKeywords.size() + " 个附魔ID关键词: " + String.join(", ", enchantIdKeywords));
-        getLogger().info("已加载 " + translationKeyKeywords.size() + " 个翻译键关键词: " + String.join(", ", translationKeyKeywords));
+        // 加载消息配置
+        String actionbarText = getConfig().getString("messages.actionbar", "已自动清除异常附魔");
+        actionbarMessage = Component.text(actionbarText, NamedTextColor.RED);
+        logPrefix = getConfig().getString("messages.log-prefix", "[BugEnchantRemover]");
+
+        getLogger().info("已加载 " + enchantIdKeywords.size() + " 个附魔ID关键词");
+        getLogger().info("已加载 " + translationKeyKeywords.size() + " 个翻译键关键词");
         getLogger().info("检查间隔: " + checkInterval + " tick");
     }
 
     /**
-     * 启动异步检查任务
+     * 启动检查任务
+     * Paper: 使用异步调度，不阻塞主线程
+     * Folia: 必须使用同步调度
      */
     private void startCheckTask() {
-        Bukkit.getScheduler().runTaskTimerAsynchronously(
-                this,
-                this::performChecks,
-                0L, // 初始延迟
-                checkInterval // 检查间隔
-        );
-        getLogger().info("异步检查任务已启动，间隔: " + checkInterval + " tick");
+        if (isFolia) {
+            startFoliaTask();
+        } else {
+            startPaperTask();
+        }
     }
 
     /**
-     * 执行检查逻辑
+     * Paper 异步调度 - 高性能模式
+     * 注意: 异步任务中只能访问世界数据，不能安全访问玩家对象
+     * 因此检查任务本身在主线程执行，但使用异步调度来定期触发
      */
-    private void performChecks() {
+    private void startPaperTask() {
+        // Paper 异步调度：在异步线程执行，但玩家检查会同步到主线程
+        // 这是 Paper 推荐的做法，避免线程安全问题
+        checkTask = Bukkit.getScheduler().runTaskTimerAsynchronously(
+                this,
+                () -> {
+                    // 获取玩家列表后在主线程执行检查
+                    Player[] players = Bukkit.getOnlinePlayers().toArray(new Player[0]);
+                    for (Player player : players) {
+                        // 调度到主线程执行玩家相关操作
+                        Bukkit.getScheduler().runTask(this, () -> {
+                            if (player.isOnline()) {
+                                checkPlayerInventory(player);
+                            }
+                        });
+                    }
+                },
+                0L,
+                checkInterval
+        );
+        getLogger().info("异步调度任务已启动 (Paper高性能模式)，间隔: " + checkInterval + " tick");
+    }
+
+    /**
+     * Folia 同步调度 - Folia 兼容模式
+     * Folia 不支持异步调度，必须使用同步调度
+     */
+    private void startFoliaTask() {
+        checkTask = Bukkit.getScheduler().runTaskTimer(
+                this,
+                this::performChecksFolia,
+                0L,
+                checkInterval
+        );
+        getLogger().info("同步检查任务已启动 (Folia同步模式)，间隔: " + checkInterval + " tick");
+    }
+
+    /**
+     * Folia 执行检查逻辑 - 在主线程执行
+     */
+    private void performChecksFolia() {
         try {
-            // 检查在线玩家
-            for (Player player : Bukkit.getOnlinePlayers()) {
+            Player[] players = Bukkit.getOnlinePlayers().toArray(new Player[0]);
+            for (Player player : players) {
                 if (player != null && player.isOnline()) {
                     checkPlayerInventory(player);
                 }
@@ -105,136 +178,180 @@ public class BugEnchantRemover extends JavaPlugin {
     }
 
     /**
-     * 检查玩家背包和打开的容器
+     * 检查玩家背包和打开的容器，移除异常附魔
      */
     private void checkPlayerInventory(Player player) {
         if (player == null || !player.isOnline()) return;
 
+        String playerName = player.getName(); // 缓存玩家名
         boolean removed = false;
 
         // 检查背包所有格子
         Inventory inventory = player.getInventory();
-        for (int i = 0; i < inventory.getSize(); i++) {
-            ItemStack item = inventory.getItem(i);
-            if (isBugEnchantedBook(item)) {
-                inventory.setItem(i, null);
+        int size = inventory.getSize();
+        for (int i = 0; i < size; i++) {
+            if (removeBugEnchantments(inventory.getItem(i))) {
                 removed = true;
                 if (logRemovals) {
-                    logRemoval(player.getName() + "的背包", i);
+                    logRemoval(playerName + "的背包", i);
                 }
             }
         }
 
         // 检查副手
-        ItemStack offhand = player.getInventory().getItemInOffHand();
-        if (isBugEnchantedBook(offhand)) {
-            player.getInventory().setItemInOffHand(null);
+        if (removeBugEnchantments(player.getInventory().getItemInOffHand())) {
             removed = true;
             if (logRemovals) {
-                logRemoval(player.getName() + "的副手", -1);
+                logRemoval(playerName + "的副手", -1);
             }
         }
 
         // 检查玩家打开的容器
-        Inventory openInventory = player.getOpenInventory().getTopInventory();
-        if (openInventory != null) {
-            for (int i = 0; i < openInventory.getSize(); i++) {
-                ItemStack item = openInventory.getItem(i);
-                if (isBugEnchantedBook(item)) {
-                    openInventory.setItem(i, null);
-                    removed = true;
-                    if (logRemovals) {
-                        logRemoval(player.getName() + "打开的容器", i);
-                    }
+        Inventory topInventory = player.getOpenInventory().getTopInventory();
+        int topSize = topInventory.getSize();
+        for (int i = 0; i < topSize; i++) {
+            if (removeBugEnchantments(topInventory.getItem(i))) {
+                removed = true;
+                if (logRemovals) {
+                    logRemoval(playerName + "打开的容器", i);
                 }
             }
         }
 
-        // 如果移除了物品，发送提示
+        // 如果移除了附魔，发送提示
         if (removed) {
-            // 在主线程发送actionbar
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (player.isOnline()) {
-                    player.sendActionBar(ACTIONBAR_MESSAGE);
-                }
-            });
+            sendActionBarSafe(player);
         }
     }
 
     /**
-     * 判断物品是否为异常的附魔书
+     * 安全发送 actionbar 消息
      */
-    private boolean isBugEnchantedBook(ItemStack item) {
-        if (item == null || item.getType() != Material.ENCHANTED_BOOK) {
+    private void sendActionBarSafe(Player player) {
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (player.isOnline()) {
+                player.sendActionBar(actionbarMessage);
+            }
+        });
+    }
+
+    /**
+     * 移除物品上的异常附魔
+     */
+    private boolean removeBugEnchantments(ItemStack item) {
+        if (item == null) return false;
+
+        Map<Enchantment, Integer> bugEnchantments = getBugEnchantments(item);
+        if (bugEnchantments.isEmpty()) {
             return false;
         }
 
-        if (!item.hasItemMeta()) {
-            return false;
+        if (item.getType() == Material.ENCHANTED_BOOK) {
+            EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
+            if (meta == null) return false;
+            for (Enchantment enchant : bugEnchantments.keySet()) {
+                meta.removeStoredEnchant(enchant);
+            }
+            item.setItemMeta(meta);
+        } else {
+            ItemMeta meta = item.getItemMeta();
+            if (meta == null) return false;
+            for (Enchantment enchant : bugEnchantments.keySet()) {
+                meta.removeEnchant(enchant);
+            }
+            item.setItemMeta(meta);
         }
 
-        if (!(item.getItemMeta() instanceof EnchantmentStorageMeta)) {
-            return false;
+        return true;
+    }
+
+    /**
+     * 获取物品中有问题的附魔列表
+     */
+    private Map<Enchantment, Integer> getBugEnchantments(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) {
+            return Collections.emptyMap();
         }
 
-        EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
+        if (item.getType() == Material.ENCHANTED_BOOK) {
+            if (!(item.getItemMeta() instanceof EnchantmentStorageMeta meta)) {
+                return Collections.emptyMap();
+            }
+            return findBugEnchantments(meta.getStoredEnchants());
+        } else {
+            ItemMeta itemMeta = item.getItemMeta();
+            if (itemMeta == null) {
+                return Collections.emptyMap();
+            }
+            return findBugEnchantments(itemMeta.getEnchants());
+        }
+    }
 
-        // 检查存储的附魔的ID和翻译键
-        for (Map.Entry<Enchantment, Integer> entry : meta.getStoredEnchants().entrySet()) {
-            Enchantment enchant = entry.getKey();
+    /**
+     * 从附魔Map中筛选出有问题的附魔
+     */
+    private Map<Enchantment, Integer> findBugEnchantments(Map<Enchantment, Integer> enchants) {
+        if (enchants.isEmpty()) {
+            return Collections.emptyMap();
+        }
 
-            // 获取附魔的ID和翻译键
-            String enchantId = enchant.getKey().toString(); // 完整ID，如 "nova_structures:jockey/spawn_bogged_horseman"
-            String enchantNamespace = enchant.getKey().getNamespace(); // 命名空间，如 "nova_structures"
-            String enchantKey = enchant.getKey().getKey(); // 键名，如 "jockey/spawn_bogged_horseman"
-            String translationKey = enchant.translationKey(); // 翻译键，如 "enchantment.dnt.non_survival_enchant"
+        Map<Enchantment, Integer> bugEnchantments = null;
 
-            // 检查是否匹配任何关键词
-            if (matchesAnyKeyword(enchantId, enchantNamespace, enchantKey, translationKey)) {
-                return true;
+        for (Map.Entry<Enchantment, Integer> entry : enchants.entrySet()) {
+            if (isBugEnchantment(entry.getKey())) {
+                if (bugEnchantments == null) {
+                    bugEnchantments = new HashMap<>();
+                }
+                bugEnchantments.put(entry.getKey(), entry.getValue());
             }
         }
 
-        return false;
+        return bugEnchantments != null ? bugEnchantments : Collections.emptyMap();
+    }
+
+    /**
+     * 检查附魔是否为异常附魔
+     */
+    private boolean isBugEnchantment(Enchantment enchant) {
+        return matchesAnyKeyword(
+                enchant.getKey().toString(),
+                enchant.getKey().getNamespace(),
+                enchant.getKey().getKey()
+        );
     }
 
     /**
      * 检查附魔的ID和翻译键是否匹配任何关键词
      */
-    private boolean matchesAnyKeyword(String enchantId, String enchantNamespace, String enchantKey, String translationKey) {
-        // 将参数转换为小写用于不区分大小写的比较
-        String lowerEnchantId = enchantId.toLowerCase(Locale.ROOT);
-        String lowerEnchantNamespace = enchantNamespace.toLowerCase(Locale.ROOT);
-        String lowerEnchantKey = enchantKey.toLowerCase(Locale.ROOT);
-        String lowerTranslationKey = translationKey.toLowerCase(Locale.ROOT);
+    private boolean matchesAnyKeyword(String enchantId, String enchantNamespace, String enchantKey) {
+        // 构建翻译键
+        String translationKey = "enchantment." + enchantNamespace + "." + enchantKey;
 
         // 检查附魔ID关键词
         for (String keyword : enchantIdKeywords) {
             if (keyword == null || keyword.isEmpty()) continue;
 
             String lowerKeyword = keyword.toLowerCase(Locale.ROOT);
+            String lowerEnchantId = enchantId.toLowerCase(Locale.ROOT);
 
-            // 检查完整ID、命名空间或键名是否包含关键词
             if (lowerEnchantId.contains(lowerKeyword) ||
-                    lowerEnchantNamespace.contains(lowerKeyword) ||
-                    lowerEnchantKey.contains(lowerKeyword)) {
-                if (logRemovals) {
-                    getLogger().info("匹配附魔ID关键词: " + keyword + " -> " + enchantId);
+                    enchantNamespace.toLowerCase(Locale.ROOT).contains(lowerKeyword) ||
+                    enchantKey.toLowerCase(Locale.ROOT).contains(lowerKeyword)) {
+                if (logKeywordMatches) {
+                    getLogger().info(logPrefix + " 匹配附魔ID关键词: " + keyword + " -> " + enchantId);
                 }
                 return true;
             }
         }
 
         // 检查翻译键关键词
+        String lowerTranslationKey = translationKey.toLowerCase(Locale.ROOT);
         for (String keyword : translationKeyKeywords) {
             if (keyword == null || keyword.isEmpty()) continue;
 
-            String lowerKeyword = keyword.toLowerCase(Locale.ROOT);
-
-            // 检查翻译键是否包含关键词
-            if (lowerTranslationKey.contains(lowerKeyword)) {
-                if (logRemovals) {
-                    getLogger().info("匹配翻译键关键词: " + keyword + " -> " + translationKey);
+            if (lowerTranslationKey.contains(keyword.toLowerCase(Locale.ROOT))) {
+                if (logKeywordMatches) {
+                    getLogger().info(logPrefix + " 匹配翻译键关键词: " + keyword + " -> " + translationKey);
                 }
                 return true;
             }
@@ -247,48 +364,53 @@ public class BugEnchantRemover extends JavaPlugin {
      * 设置命令
      */
     private void setupCommands() {
-        // 重新加载配置的命令
-        this.getCommand("bugenchantreload").setExecutor((sender, command, label, args) -> {
-            if (sender.hasPermission("bugenchantremover.reload")) {
-                loadConfig();
-
-                sender.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.GREEN)
-                        .append(Component.text("配置已重载", NamedTextColor.YELLOW)));
-                return true;
-            }
-            sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
-            return false;
-        });
-
-        // 手动扫描命令
-        this.getCommand("bugenchantscan").setExecutor((sender, command, label, args) -> {
-            if (sender.hasPermission("bugenchantremover.scan")) {
-                if (sender instanceof Player player) {
-                    int removed = scanPlayerInventory(player);
+        var reloadCmd = this.getCommand("bugenchantreload");
+        if (reloadCmd != null) {
+            reloadCmd.setExecutor((sender, command, label, args) -> {
+                if (sender.hasPermission("bugenchantremover.reload")) {
+                    loadConfig();
                     sender.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.GREEN)
-                            .append(Component.text("扫描完成，移除了 " + removed + " 本异常附魔书", NamedTextColor.YELLOW)));
-                } else {
-                    sender.sendMessage(Component.text("该命令只能由玩家执行", NamedTextColor.RED));
+                            .append(Component.text("配置已重载", NamedTextColor.YELLOW)));
+                    return true;
                 }
-                return true;
-            }
-            sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
-            return false;
-        });
+                sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
+                return false;
+            });
+        }
 
-        // 检测附魔信息命令
-        this.getCommand("bugenchanttest").setExecutor((sender, command, label, args) -> {
-            if (sender.hasPermission("bugenchantremover.test")) {
-                if (sender instanceof Player player) {
-                    testPlayerEnchantments(player);
-                } else {
-                    sender.sendMessage(Component.text("该命令只能由玩家执行", NamedTextColor.RED));
+        var scanCmd = this.getCommand("bugenchantscan");
+        if (scanCmd != null) {
+            scanCmd.setExecutor((sender, command, label, args) -> {
+                if (sender.hasPermission("bugenchantremover.scan")) {
+                    if (sender instanceof Player player) {
+                        int removed = scanPlayerInventory(player);
+                        sender.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.GREEN)
+                                .append(Component.text("扫描完成，移除了 " + removed + " 个物品上的异常附魔", NamedTextColor.YELLOW)));
+                    } else {
+                        sender.sendMessage(Component.text("该命令只能由玩家执行", NamedTextColor.RED));
+                    }
+                    return true;
                 }
-                return true;
-            }
-            sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
-            return false;
-        });
+                sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
+                return false;
+            });
+        }
+
+        var testCmd = this.getCommand("bugenchanttest");
+        if (testCmd != null) {
+            testCmd.setExecutor((sender, command, label, args) -> {
+                if (sender.hasPermission("bugenchantremover.test")) {
+                    if (sender instanceof Player player) {
+                        testPlayerEnchantments(player);
+                    } else {
+                        sender.sendMessage(Component.text("该命令只能由玩家执行", NamedTextColor.RED));
+                    }
+                    return true;
+                }
+                sender.sendMessage(Component.text("你没有执行此命令的权限", NamedTextColor.RED));
+                return false;
+            });
+        }
     }
 
     /**
@@ -297,33 +419,30 @@ public class BugEnchantRemover extends JavaPlugin {
     private void testPlayerEnchantments(Player player) {
         ItemStack item = player.getInventory().getItemInMainHand();
 
-        if (item == null || item.getType() != Material.ENCHANTED_BOOK) {
+        if (item.getType() != Material.ENCHANTED_BOOK) {
             player.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.RED)
                     .append(Component.text("请手持一本附魔书", NamedTextColor.YELLOW)));
             return;
         }
 
-        if (!(item.getItemMeta() instanceof EnchantmentStorageMeta)) {
+        if (!(item.getItemMeta() instanceof EnchantmentStorageMeta meta)) {
             player.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.RED)
                     .append(Component.text("这不是一本有效的附魔书", NamedTextColor.YELLOW)));
             return;
         }
 
-        EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
         StringBuilder message = new StringBuilder("附魔书信息:\n");
 
         for (Map.Entry<Enchantment, Integer> entry : meta.getStoredEnchants().entrySet()) {
             Enchantment enchant = entry.getKey();
             int level = entry.getValue();
 
-            // 获取附魔的各个ID部分
             String enchantId = enchant.getKey().toString();
             String enchantNamespace = enchant.getKey().getNamespace();
             String enchantKey = enchant.getKey().getKey();
-            String translationKey = enchant.translationKey();
+            String translationKey = "enchantment." + enchantNamespace + "." + enchantKey;
 
-            // 检查是否匹配
-            boolean isBug = matchesAnyKeyword(enchantId, enchantNamespace, enchantKey, translationKey);
+            boolean isBug = isBugEnchantment(enchant);
 
             message.append(String.format("附魔ID: %s\n", enchantId));
             message.append(String.format("  命名空间: %s\n", enchantNamespace));
@@ -341,40 +460,41 @@ public class BugEnchantRemover extends JavaPlugin {
      * 设置事件监听器
      */
     private void setupEventListeners() {
-        // 玩家拾取物品事件 - 防止拾取异常附魔书
+        // 玩家拾取物品事件
         Bukkit.getPluginManager().registerEvents(new org.bukkit.event.Listener() {
             @org.bukkit.event.EventHandler
-            public void onPlayerPickupItem(org.bukkit.event.player.PlayerPickupItemEvent event) {
-                if (isBugEnchantedBook(event.getItem().getItemStack())) {
-                    event.setCancelled(true);
-                    event.getItem().remove();
-                    event.getPlayer().sendActionBar(ACTIONBAR_MESSAGE);
+            public void onEntityPickupItem(org.bukkit.event.entity.EntityPickupItemEvent event) {
+                if (event.getEntity() instanceof Player player) {
+                    if (removeBugEnchantments(event.getItem().getItemStack())) {
+                        event.setCancelled(true);
+                        event.getItem().remove();
+                        sendActionBarSafe(player);
+                    }
                 }
             }
         }, this);
 
-        // 玩家交互事件 - 防止使用异常附魔书
+        // 玩家交互事件
         Bukkit.getPluginManager().registerEvents(new org.bukkit.event.Listener() {
             @org.bukkit.event.EventHandler
             public void onPlayerInteract(org.bukkit.event.player.PlayerInteractEvent event) {
-                ItemStack item = event.getItem();
-                if (item != null && isBugEnchantedBook(item)) {
+                // removeBugEnchantments 内部已处理 null 情况
+                if (removeBugEnchantments(event.getItem())) {
                     event.setCancelled(true);
-                    event.getPlayer().getInventory().remove(item);
-                    event.getPlayer().sendActionBar(ACTIONBAR_MESSAGE);
+                    sendActionBarSafe(event.getPlayer());
                 }
             }
         }, this);
 
-        // 玩家关闭容器事件 - 确保容器关闭时检查容器内物品
+        // 玩家关闭容器事件
         Bukkit.getPluginManager().registerEvents(new org.bukkit.event.Listener() {
             @org.bukkit.event.EventHandler
             public void onInventoryClose(org.bukkit.event.inventory.InventoryCloseEvent event) {
                 if (event.getPlayer() instanceof Player player) {
-                    // 延迟1tick检查，确保所有操作已完成
-                    Bukkit.getScheduler().runTaskLater(BugEnchantRemover.this, () -> {
-                        checkPlayerInventory(player);
-                    }, 1L);
+                    Bukkit.getScheduler().runTaskLater(
+                            BugEnchantRemover.this,
+                            () -> checkPlayerInventory(player),
+                            1L);
                 }
             }
         }, this);
@@ -382,24 +502,33 @@ public class BugEnchantRemover extends JavaPlugin {
 
     /**
      * 手动扫描玩家背包
+     * 注意: 手动扫描只检查玩家背包和副手，不检查打开的容器
      */
     private int scanPlayerInventory(Player player) {
         int removed = 0;
-        Inventory inventory = player.getInventory();
+        String playerName = player.getName(); // 缓存玩家名
 
+        // 检查主背包
+        Inventory inventory = player.getInventory();
         for (int i = 0; i < inventory.getSize(); i++) {
-            ItemStack item = inventory.getItem(i);
-            if (isBugEnchantedBook(item)) {
-                inventory.setItem(i, null);
+            if (removeBugEnchantments(inventory.getItem(i))) {
                 removed++;
                 if (logRemovals) {
-                    logRemoval(player.getName() + "的手动扫描", i);
+                    logRemoval(playerName + "的主背包", i);
                 }
             }
         }
 
+        // 检查副手
+        if (removeBugEnchantments(player.getInventory().getItemInOffHand())) {
+            removed++;
+            if (logRemovals) {
+                logRemoval(playerName + "的副手", -1);
+            }
+        }
+
         if (removed > 0) {
-            player.sendActionBar(ACTIONBAR_MESSAGE);
+            sendActionBarSafe(player);
         }
 
         return removed;
@@ -410,6 +539,6 @@ public class BugEnchantRemover extends JavaPlugin {
      */
     private void logRemoval(String location, int slot) {
         String slotStr = slot >= 0 ? "槽位 " + slot : "副手";
-        getLogger().info("已清除异常附魔书 - 位置: " + location + ", " + slotStr);
+        getLogger().info(logPrefix + " 已清除异常附魔 - 位置: " + location + ", " + slotStr);
     }
 }
