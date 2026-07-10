@@ -114,6 +114,13 @@ public class BugEnchantRemover extends JavaPlugin {
         }
 
         checkInterval = getConfig().getLong("check-interval", 21L);
+        
+        // 验证检查间隔，最小值为 1 tick
+        if (checkInterval < 1) {
+            getLogger().warning("检查间隔不能小于 1，已自动调整为 21 tick");
+            checkInterval = 21L;
+        }
+        
         logRemovals = getConfig().getBoolean("log-removals", false);
         logKeywordMatches = getConfig().getBoolean("log-keyword-matches", false);
         // 兼容旧配置键 remove-enchanted-book-on-single-bug：优先读取新键，缺失时回退旧键，再缺失默认 true
@@ -202,7 +209,10 @@ public class BugEnchantRemover extends JavaPlugin {
                 }
             }
         } catch (Exception e) {
-            getLogger().warning("检查过程中发生错误: " + e.getMessage());
+            getLogger().warning("检查过程中发生错误: " + e.getClass().getSimpleName() + " - " + e.getMessage());
+            if (logKeywordMatches) {
+                getLogger().info("堆栈跟踪: " + e.getStackTrace()[0].toString());
+            }
         }
     }
 
