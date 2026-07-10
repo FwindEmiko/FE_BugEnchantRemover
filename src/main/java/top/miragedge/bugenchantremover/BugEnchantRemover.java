@@ -10,6 +10,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.EnchantmentStorageMeta;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.meta.Repairable;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -18,12 +19,25 @@ import java.util.*;
 
 public class BugEnchantRemover extends JavaPlugin {
 
-    private final Set<String> enchantIdKeywords = new HashSet<>();
-    private final Set<String> translationKeyKeywords = new HashSet<>();
+    /** 处理结果语义，用于区分「整本书删除」/「物品被修改」/「无变化」 */
+    private enum RemovalResult {
+        /** 无异常附魔或未触发处理 */
+        NONE,
+        /** 已移除部分异常附魔，物品仍存在（需回写调用方栈） */
+        MODIFIED,
+        /** 整本书被删除（setAmount(0)），调用方应清理对应槽位/实体 */
+        REMOVED
+    }
+
+    /** 预计算的小写关键词，避免每次匹配时重复 toLowerCase */
+    private final Set<String> lowerEnchantIdKeywords = new HashSet<>();
+    private final Set<String> lowerTranslationKeyKeywords = new HashSet<>();
     private long checkInterval;
     private boolean logRemovals;
     private boolean logKeywordMatches;
-    private boolean removeEnchantedBookOnSingleBug;
+    private boolean removeEnchantedBookWhenAllBug;
+    private boolean removeEmptyEnchantedBook;
+    private boolean protectCustomItems;
 
     // 消息配置
     private Component actionbarMessage;
@@ -85,26 +99,40 @@ public class BugEnchantRemover extends JavaPlugin {
         }
         reloadConfig();
 
-        enchantIdKeywords.clear();
-        enchantIdKeywords.addAll(getConfig().getStringList("enchant-id-keywords"));
-
-        translationKeyKeywords.clear();
-        translationKeyKeywords.addAll(getConfig().getStringList("translation-key-keywords"));
+        // 预计算小写关键词，避免每次匹配时重复 toLowerCase
+        lowerEnchantIdKeywords.clear();
+        for (String kw : getConfig().getStringList("enchant-id-keywords")) {
+            if (kw != null && !kw.isEmpty()) {
+                lowerEnchantIdKeywords.add(kw.toLowerCase(Locale.ROOT));
+            }
+        }
+        lowerTranslationKeyKeywords.clear();
+        for (String kw : getConfig().getStringList("translation-key-keywords")) {
+            if (kw != null && !kw.isEmpty()) {
+                lowerTranslationKeyKeywords.add(kw.toLowerCase(Locale.ROOT));
+            }
+        }
 
         checkInterval = getConfig().getLong("check-interval", 21L);
         logRemovals = getConfig().getBoolean("log-removals", false);
         logKeywordMatches = getConfig().getBoolean("log-keyword-matches", false);
-        removeEnchantedBookOnSingleBug = getConfig().getBoolean("remove-enchanted-book-on-single-bug", false);
+        // 兼容旧配置键 remove-enchanted-book-on-single-bug：优先读取新键，缺失时回退旧键，再缺失默认 true
+        removeEnchantedBookWhenAllBug = getConfig().getBoolean("remove-enchanted-book-when-all-bug",
+                getConfig().getBoolean("remove-enchanted-book-on-single-bug", true));
+        removeEmptyEnchantedBook = getConfig().getBoolean("remove-empty-enchanted-book", true);
+        protectCustomItems = getConfig().getBoolean("protect-custom-items", true);
 
         // 加载消息配置
         String actionbarText = getConfig().getString("messages.actionbar", "已自动清除异常附魔");
         actionbarMessage = Component.text(actionbarText, NamedTextColor.RED);
         logPrefix = getConfig().getString("messages.log-prefix", "[BugEnchantRemover]");
 
-        getLogger().info("已加载 " + enchantIdKeywords.size() + " 个附魔ID关键词");
-        getLogger().info("已加载 " + translationKeyKeywords.size() + " 个翻译键关键词");
+        getLogger().info("已加载 " + lowerEnchantIdKeywords.size() + " 个附魔ID关键词");
+        getLogger().info("已加载 " + lowerTranslationKeyKeywords.size() + " 个翻译键关键词");
         getLogger().info("检查间隔: " + checkInterval + " tick");
-        getLogger().info("单异常附魔移除整本附魔书: " + (removeEnchantedBookOnSingleBug ? "开启" : "关闭"));
+        getLogger().info("全异常附魔时移除整本附魔书: " + (removeEnchantedBookWhenAllBug ? "开启" : "关闭"));
+        getLogger().info("移除空附魔书: " + (removeEmptyEnchantedBook ? "开启" : "关闭"));
+        getLogger().info("保护自定义物品(GUI道具): " + (protectCustomItems ? "开启" : "关闭"));
     }
 
     /**
@@ -185,25 +213,26 @@ public class BugEnchantRemover extends JavaPlugin {
         if (player == null || !player.isOnline()) return;
 
         String playerName = player.getName(); // 缓存玩家名
-        boolean removed = false;
+        boolean changed = false;
 
         // 检查背包所有格子
         Inventory inventory = player.getInventory();
         int size = inventory.getSize();
         for (int i = 0; i < size; i++) {
-            if (removeBugEnchantments(inventory.getItem(i))) {
-                removed = true;
+            RemovalResult result = removeBugEnchantments(inventory.getItem(i));
+            if (result != RemovalResult.NONE) {
+                changed = true;
                 if (logRemovals) {
-                    logRemoval(playerName + "的背包", i);
+                    logRemoval(playerName + "的背包", i, result);
                 }
             }
         }
 
         // 检查副手
-        if (removeBugEnchantments(player.getInventory().getItemInOffHand())) {
-            removed = true;
+        if (removeBugEnchantments(player.getInventory().getItemInOffHand()) != RemovalResult.NONE) {
+            changed = true;
             if (logRemovals) {
-                logRemoval(playerName + "的副手", -1);
+                logRemoval(playerName + "的副手", -1, RemovalResult.MODIFIED);
             }
         }
 
@@ -211,65 +240,132 @@ public class BugEnchantRemover extends JavaPlugin {
         Inventory topInventory = player.getOpenInventory().getTopInventory();
         int topSize = topInventory.getSize();
         for (int i = 0; i < topSize; i++) {
-            if (removeBugEnchantments(topInventory.getItem(i))) {
-                removed = true;
+            if (removeBugEnchantments(topInventory.getItem(i)) != RemovalResult.NONE) {
+                changed = true;
                 if (logRemovals) {
-                    logRemoval(playerName + "打开的容器", i);
+                    logRemoval(playerName + "打开的容器", i, RemovalResult.MODIFIED);
                 }
             }
         }
 
         // 如果移除了附魔，发送提示
-        if (removed) {
+        if (changed) {
             sendActionBarSafe(player);
         }
     }
 
     /**
      * 安全发送 actionbar 消息
+     * 所有调用点（定时检查、拾取事件、交互事件、容器关闭回调）均在主线程执行，
+     * 因此直接发送即可，无需额外调度。
      */
     private void sendActionBarSafe(Player player) {
-        Bukkit.getScheduler().runTask(this, () -> {
-            if (player.isOnline()) {
-                player.sendActionBar(actionbarMessage);
-            }
-        });
+        if (player.isOnline()) {
+            player.sendActionBar(actionbarMessage);
+        }
     }
 
     /**
      * 移除物品上的异常附魔
+     * 对于附魔书，会额外处理「全异常附魔导致空书」与「真正空附魔书」两种情况，
+     * 同时通过 isCustomItem 保护作为 GUI 道具使用的附魔书。
+     * 返回值语义：
+     *   NONE     - 无异常附魔或未触发处理
+     *   MODIFIED - 已移除部分异常附魔，物品仍存在（调用方需回写更新后的 ItemStack）
+     *   REMOVED  - 整本书被删除（setAmount(0)），调用方应清理对应槽位/实体
      */
-    private boolean removeBugEnchantments(ItemStack item) {
-        if (item == null) return false;
+    private RemovalResult removeBugEnchantments(ItemStack item) {
+        if (item == null) return RemovalResult.NONE;
+        Material type = item.getType();
+        if (type == Material.AIR) return RemovalResult.NONE;
 
-        Map<Enchantment, Integer> bugEnchantments = getBugEnchantments(item);
-        if (bugEnchantments.isEmpty()) {
-            return false;
-        }
+        if (type == Material.ENCHANTED_BOOK) {
+            if (!(item.getItemMeta() instanceof EnchantmentStorageMeta meta)) return RemovalResult.NONE;
 
-        if (item.getType() == Material.ENCHANTED_BOOK) {
-            // 如果配置开启，且附魔书只有一个异常附魔，直接移除整本书
-            if (removeEnchantedBookOnSingleBug && bugEnchantments.size() == 1) {
-                item.setAmount(0);  // 彻底清空物品，而不是设置为AIR
-                return true;
+            Map<Enchantment, Integer> storedEnchants = meta.getStoredEnchants();
+            Map<Enchantment, Integer> bugEnchantments = findBugEnchantments(storedEnchants);
+
+            int totalEnchants = storedEnchants.size();
+            int bugCount = bugEnchantments.size();
+            boolean isCustom = protectCustomItems && isCustomItem(meta);
+
+            // 情况一：没有异常附魔
+            if (bugCount == 0) {
+                // 检查是否为真正的空附魔书（无任何存储附魔），且非自定义物品时才删除
+                if (removeEmptyEnchantedBook && totalEnchants == 0 && !isCustom) {
+                    item.setAmount(0);  // 彻底清空物品，而不是设置为AIR
+                    return RemovalResult.REMOVED;
+                }
+                return RemovalResult.NONE;
             }
 
-            EnchantmentStorageMeta meta = (EnchantmentStorageMeta) item.getItemMeta();
-            if (meta == null) return false;
+            // 情况二：存在异常附魔
+            // 若所有附魔都是异常附魔（1个或多个），移除后将产生空附魔书
+            if (bugCount == totalEnchants) {
+                // 配置开启且非自定义物品时，直接删除整本书以避免空附魔书
+                if (removeEnchantedBookWhenAllBug && !isCustom) {
+                    item.setAmount(0);
+                    return RemovalResult.REMOVED;
+                }
+                // 否则继续移除异常附魔（可能产生空附魔书，但这是配置选择 / 或为自定义物品需保留）
+            }
+
+            // 移除单个/多个异常附魔（保留正常附魔）
             for (Enchantment enchant : bugEnchantments.keySet()) {
                 meta.removeStoredEnchant(enchant);
             }
             item.setItemMeta(meta);
+            return RemovalResult.MODIFIED;
         } else {
+            Map<Enchantment, Integer> bugEnchantments = getBugEnchantments(item);
+            if (bugEnchantments.isEmpty()) return RemovalResult.NONE;
+
             ItemMeta meta = item.getItemMeta();
-            if (meta == null) return false;
+            if (meta == null) return RemovalResult.NONE;
             for (Enchantment enchant : bugEnchantments.keySet()) {
                 meta.removeEnchant(enchant);
             }
             item.setItemMeta(meta);
+            return RemovalResult.MODIFIED;
         }
+    }
 
-        return true;
+    /**
+     * 检查物品是否为自定义物品 / GUI 道具
+     * 很多 GUI 界面物品和道具是以「附魔书 + 自定义数据值」实现的，
+     * 命中以下任意一项即视为自定义物品，避免被当作空书误删：
+     *   - 自定义显示名称 / Lore 描述
+     *   - CustomModelData 自定义模型数据
+     *   - 修复成本(铁砧) / 不可破坏标记
+     *   - ItemFlags（如 HIDE_ENCHANTS）/ 自定义属性修饰符
+     *   - PersistentDataContainer 自定义NBT数据
+     */
+    private boolean isCustomItem(ItemMeta meta) {
+        if (meta == null) return false;
+
+        // 自定义显示名称
+        if (meta.hasDisplayName()) return true;
+
+        // Lore 描述
+        if (meta.hasLore()) return true;
+
+        // 自定义模型数据（GUI道具最常用）
+        if (meta.hasCustomModelData()) return true;
+
+        // 修复成本（铁砧修改痕迹）
+        if (meta instanceof Repairable repairable && repairable.hasRepairCost()) return true;
+
+        // 不可破坏标记
+        if (meta.isUnbreakable()) return true;
+
+        // ItemFlags（如 HIDE_ENCHANTS、HIDE_ATTRIBUTES 等，GUI道具常用）
+        if (!meta.getItemFlags().isEmpty()) return true;
+
+        // 自定义属性修饰符
+        if (meta.hasAttributeModifiers()) return true;
+
+        // PersistentDataContainer 自定义NBT数据（插件写入的数据）
+        return !meta.getPersistentDataContainer().isEmpty();
     }
 
     /**
@@ -329,36 +425,35 @@ public class BugEnchantRemover extends JavaPlugin {
 
     /**
      * 检查附魔的ID和翻译键是否匹配任何关键词
+     * 使用预计算的小写关键词集合，避免每次匹配重复 toLowerCase
      */
     private boolean matchesAnyKeyword(String enchantId, String enchantNamespace, String enchantKey) {
         // 构建翻译键
         String translationKey = "enchantment." + enchantNamespace + "." + enchantKey;
 
-        // 检查附魔ID关键词
-        for (String keyword : enchantIdKeywords) {
-            if (keyword == null || keyword.isEmpty()) continue;
+        // 预先转换为小写（单次调用只转换一次，而非每个关键词都转换）
+        String lowerEnchantId = enchantId.toLowerCase(Locale.ROOT);
+        String lowerNamespace = enchantNamespace.toLowerCase(Locale.ROOT);
+        String lowerKey = enchantKey.toLowerCase(Locale.ROOT);
+        String lowerTranslationKey = translationKey.toLowerCase(Locale.ROOT);
 
-            String lowerKeyword = keyword.toLowerCase(Locale.ROOT);
-            String lowerEnchantId = enchantId.toLowerCase(Locale.ROOT);
-
+        // 检查附魔ID关键词（对 id / namespace / key 分别检查 contains）
+        for (String lowerKeyword : lowerEnchantIdKeywords) {
             if (lowerEnchantId.contains(lowerKeyword) ||
-                    enchantNamespace.toLowerCase(Locale.ROOT).contains(lowerKeyword) ||
-                    enchantKey.toLowerCase(Locale.ROOT).contains(lowerKeyword)) {
+                    lowerNamespace.contains(lowerKeyword) ||
+                    lowerKey.contains(lowerKeyword)) {
                 if (logKeywordMatches) {
-                    getLogger().info(logPrefix + " 匹配附魔ID关键词: " + keyword + " -> " + enchantId);
+                    getLogger().info(logPrefix + " 匹配附魔ID关键词: " + lowerKeyword + " -> " + enchantId);
                 }
                 return true;
             }
         }
 
         // 检查翻译键关键词
-        String lowerTranslationKey = translationKey.toLowerCase(Locale.ROOT);
-        for (String keyword : translationKeyKeywords) {
-            if (keyword == null || keyword.isEmpty()) continue;
-
-            if (lowerTranslationKey.contains(keyword.toLowerCase(Locale.ROOT))) {
+        for (String lowerKeyword : lowerTranslationKeyKeywords) {
+            if (lowerTranslationKey.contains(lowerKeyword)) {
                 if (logKeywordMatches) {
-                    getLogger().info(logPrefix + " 匹配翻译键关键词: " + keyword + " -> " + translationKey);
+                    getLogger().info(logPrefix + " 匹配翻译键关键词: " + lowerKeyword + " -> " + translationKey);
                 }
                 return true;
             }
@@ -422,6 +517,8 @@ public class BugEnchantRemover extends JavaPlugin {
 
     /**
      * 测试玩家手中的附魔书
+     * 输出存储附魔详情、是否识别为自定义物品(GUI道具)，以及预测的处理结果，
+     * 便于验证空书/全异常书/自定义物品保护逻辑是否生效。
      */
     private void testPlayerEnchantments(Player player) {
         ItemStack item = player.getInventory().getItemInMainHand();
@@ -438,9 +535,20 @@ public class BugEnchantRemover extends JavaPlugin {
             return;
         }
 
-        StringBuilder message = new StringBuilder("附魔书信息:\n");
+        Map<Enchantment, Integer> storedEnchants = meta.getStoredEnchants();
+        Map<Enchantment, Integer> bugEnchantments = findBugEnchantments(storedEnchants);
+        boolean isCustom = protectCustomItems && isCustomItem(meta);
 
-        for (Map.Entry<Enchantment, Integer> entry : meta.getStoredEnchants().entrySet()) {
+        int totalEnchants = storedEnchants.size();
+        int bugCount = bugEnchantments.size();
+
+        StringBuilder message = new StringBuilder("附魔书信息:\n");
+        message.append(String.format("存储附魔总数: %d\n", totalEnchants));
+        message.append(String.format("异常附魔数量: %d\n", bugCount));
+        message.append(String.format("识别为自定义物品(GUI道具): %s\n", isCustom ? "是" : "否"));
+        message.append('\n');
+
+        for (Map.Entry<Enchantment, Integer> entry : storedEnchants.entrySet()) {
             Enchantment enchant = entry.getKey();
             int level = entry.getValue();
 
@@ -449,7 +557,7 @@ public class BugEnchantRemover extends JavaPlugin {
             String enchantKey = enchant.getKey().getKey();
             String translationKey = "enchantment." + enchantNamespace + "." + enchantKey;
 
-            boolean isBug = isBugEnchantment(enchant);
+            boolean isBug = bugEnchantments.containsKey(enchant);
 
             message.append(String.format("附魔ID: %s\n", enchantId));
             message.append(String.format("  命名空间: %s\n", enchantNamespace));
@@ -459,8 +567,32 @@ public class BugEnchantRemover extends JavaPlugin {
             message.append(String.format("  检测为Bug: %s\n\n", isBug ? "是" : "否"));
         }
 
+        // 预测处理结果（与 removeBugEnchantments 逻辑保持一致）
+        String prediction = predictEnchantedBookAction(bugCount, totalEnchants, isCustom);
+        message.append(String.format("预测处理结果: %s\n", prediction));
+
         player.sendMessage(Component.text("[BugEnchantRemover] ", NamedTextColor.GREEN)
                 .append(Component.text(message.toString(), NamedTextColor.YELLOW)));
+    }
+
+    /**
+     * 预测附魔书的处理结果（与 removeBugEnchantments 逻辑保持一致）
+     * 用于 /bugenchanttest 命令展示，便于验证配置与识别逻辑。
+     */
+    private String predictEnchantedBookAction(int bugCount, int totalEnchants, boolean isCustom) {
+        if (bugCount == 0) {
+            if (totalEnchants == 0 && removeEmptyEnchantedBook && !isCustom) {
+                return "删除整本书（空附魔书）";
+            }
+            return "不处理";
+        }
+        if (bugCount == totalEnchants) {
+            if (removeEnchantedBookWhenAllBug && !isCustom) {
+                return "删除整本书（全为异常附魔）";
+            }
+            return "移除异常附魔（会产生空附魔书）";
+        }
+        return "移除异常附魔（保留正常附魔）";
     }
 
     /**
@@ -472,9 +604,16 @@ public class BugEnchantRemover extends JavaPlugin {
             @org.bukkit.event.EventHandler
             public void onEntityPickupItem(org.bukkit.event.entity.EntityPickupItemEvent event) {
                 if (event.getEntity() instanceof Player player) {
-                    if (removeBugEnchantments(event.getItem().getItemStack())) {
+                    ItemStack item = event.getItem().getItemStack();
+                    RemovalResult result = removeBugEnchantments(item);
+                    if (result == RemovalResult.REMOVED) {
+                        // 整本书被删除：取消拾取并移除地面实体
                         event.setCancelled(true);
                         event.getItem().remove();
+                        sendActionBarSafe(player);
+                    } else if (result == RemovalResult.MODIFIED) {
+                        // 部分异常附魔被移除：回写更新后的物品到地面实体，允许正常拾取
+                        event.getItem().setItemStack(item);
                         sendActionBarSafe(player);
                     }
                 }
@@ -485,9 +624,18 @@ public class BugEnchantRemover extends JavaPlugin {
         Bukkit.getPluginManager().registerEvents(new org.bukkit.event.Listener() {
             @org.bukkit.event.EventHandler
             public void onPlayerInteract(org.bukkit.event.player.PlayerInteractEvent event) {
-                // removeBugEnchantments 内部已处理 null 情况
-                if (removeBugEnchantments(event.getItem())) {
+                ItemStack item = event.getItem();
+                if (item == null) return;
+                // 复制一份进行处理，避免直接修改事件快照导致不一致
+                ItemStack copy = item.clone();
+                RemovalResult result = removeBugEnchantments(copy);
+                if (result == RemovalResult.REMOVED) {
                     event.setCancelled(true);
+                    event.getPlayer().getInventory().setItemInMainHand(null);
+                    sendActionBarSafe(event.getPlayer());
+                } else if (result == RemovalResult.MODIFIED) {
+                    event.setCancelled(true);
+                    event.getPlayer().getInventory().setItemInMainHand(copy);
                     sendActionBarSafe(event.getPlayer());
                 }
             }
@@ -518,19 +666,21 @@ public class BugEnchantRemover extends JavaPlugin {
         // 检查主背包
         Inventory inventory = player.getInventory();
         for (int i = 0; i < inventory.getSize(); i++) {
-            if (removeBugEnchantments(inventory.getItem(i))) {
+            RemovalResult result = removeBugEnchantments(inventory.getItem(i));
+            if (result != RemovalResult.NONE) {
                 removed++;
                 if (logRemovals) {
-                    logRemoval(playerName + "的主背包", i);
+                    logRemoval(playerName + "的主背包", i, result);
                 }
             }
         }
 
         // 检查副手
-        if (removeBugEnchantments(player.getInventory().getItemInOffHand())) {
+        RemovalResult offhandResult = removeBugEnchantments(player.getInventory().getItemInOffHand());
+        if (offhandResult != RemovalResult.NONE) {
             removed++;
             if (logRemovals) {
-                logRemoval(playerName + "的副手", -1);
+                logRemoval(playerName + "的副手", -1, offhandResult);
             }
         }
 
@@ -544,8 +694,9 @@ public class BugEnchantRemover extends JavaPlugin {
     /**
      * 记录移除日志
      */
-    private void logRemoval(String location, int slot) {
+    private void logRemoval(String location, int slot, RemovalResult result) {
         String slotStr = slot >= 0 ? "槽位 " + slot : "副手";
-        getLogger().info(logPrefix + " 已清除异常附魔 - 位置: " + location + ", " + slotStr);
+        String action = result == RemovalResult.REMOVED ? "删除物品" : "清除异常附魔";
+        getLogger().info(logPrefix + " " + action + " - 位置: " + location + ", " + slotStr);
     }
 }

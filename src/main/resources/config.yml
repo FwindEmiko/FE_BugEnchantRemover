@@ -21,10 +21,29 @@ log-removals: true
 # 是否记录匹配的关键词详情
 log-keyword-matches: true
 
-# 当附魔书只有一个异常附魔时，直接移除整本书而不是只移除那个异常附魔
-remove-enchanted-book-on-single-bug: true
+# 当附魔书的【所有】附魔都是异常附魔时（1个或多个，移除后会导致空附魔书），
+# 直接删除整本书以避免产生空附魔书。
+# 设为 false 时仅移除异常附魔，可能产生空附魔书（由下方选项决定是否清理）。
+remove-enchanted-book-when-all-bug: true
+
+# 是否移除真正的空附魔书（没有任何存储附魔的附魔书）。
+# 某些数据包在删除附魔定义后无法彻底关闭生成，会残留空附魔书，此项用于清理它们。
+# 注意：被识别为自定义物品(GUI道具)的附魔书不会被移除（见下方保护选项）。
+remove-empty-enchanted-book: true
+
+# 自定义物品(GUI道具)保护开关。
+# 很多GUI界面物品和道具是以「附魔书 + 自定义数据值」实现的（如自定义显示名、
+# CustomModelData、Lore、PersistentData 等）。开启后，检测到这些自定义数据
+# 的附魔书不会被当作空书/全异常书删除，避免误删GUI道具。
+# 识别为自定义物品的依据（命中任意一项即视为自定义物品）：
+#   - 自定义显示名称 / Lore 描述
+#   - CustomModelData 自定义模型数据
+#   - 修复成本(铁砧) / 不可破坏标记
+#   - ItemFlags（如 HIDE_ENCHANTS）/ 自定义属性修饰符 / 伤害值
+#   - PersistentDataContainer 自定义NBT数据
+protect-custom-items: true
 
 # 提示消息配置
 messages:
-  actionbar: "已自动清除异常附魔"
-  log-prefix: "[BugEnchantRemover]"
+  actionbar: "帮你清理掉找到的异常附魔书啦~"
+  log-prefix: "[星玖姬]"

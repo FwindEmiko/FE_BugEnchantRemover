@@ -29,7 +29,9 @@
 | 🎮 **事件响应** | 监听玩家拾取、交互等事件，实时清除异常附魔 |
 | 📝 **灵活配置** | 支持自定义检测关键词 |
 | 📖 **详细日志** | 可配置的日志记录，便于排查问题 |
-| 🗑️ **智能移除** | 可配置当附魔书仅有单个异常附魔时直接移除整本书 |
+| 🗑️ **智能移除** | 当附魔书所有附魔均为异常时直接移除整本书，避免产生空附魔书 |
+| 🧹 **空书清理** | 自动清理数据包残留的真正空附魔书 |
+| 🛡️ **道具保护** | 识别自定义物品(GUI道具)，避免误删以附魔书实现的GUI界面物品 |
 
 ## 📋 兼容性
 
@@ -76,8 +78,15 @@ log-removals: true
 # 是否记录匹配的关键词详情
 log-keyword-matches: true
 
-# 当附魔书只有一个异常附魔时，直接移除整本书而不是只移除那个异常附魔
-remove-enchanted-book-on-single-bug: false
+# 当附魔书的【所有】附魔都是异常附魔时，直接删除整本书以避免产生空附魔书
+remove-enchanted-book-when-all-bug: true
+
+# 是否移除真正的空附魔书（没有任何存储附魔的附魔书）
+remove-empty-enchanted-book: true
+
+# 自定义物品(GUI道具)保护：检测到自定义显示名/CustomModelData/Lore/
+# PersistentData 等数据的附魔书不会被当作空书删除，避免误删GUI道具
+protect-custom-items: true
 
 # 提示消息配置
 messages:
