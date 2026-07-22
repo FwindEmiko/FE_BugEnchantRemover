@@ -32,7 +32,7 @@ remove-enchanted-book-when-all-bug: true
 remove-empty-enchanted-book: true
 
 # 自定义物品(GUI道具)保护开关。
-# 很多GUI界面物品和道具是以「附魔书 + 自定义数据值」实现的（如自定义显示名、
+# 很多插件的GUI界面物品和道具是以「附魔书 + 自定义数据值」实现的（如自定义显示名、
 # CustomModelData、Lore、PersistentData 等）。开启后，检测到这些自定义数据
 # 的附魔书不会被当作空书/全异常书删除，避免误删GUI道具。
 # 识别为自定义物品的依据（命中任意一项即视为自定义物品）：
@@ -40,10 +40,38 @@ remove-empty-enchanted-book: true
 #   - CustomModelData 自定义模型数据
 #   - 修复成本(铁砧) / 不可破坏标记
 #   - ItemFlags（如 HIDE_ENCHANTS）/ 自定义属性修饰符 / 伤害值
-#   - PersistentDataContainer 自定义NBT数据
+#   - PersistentDataContainer 自定义NBT数据（排除 UberEnchant 自身数据）
+# 注意：当物品 PDC 中仅有 UberEnchant 数据时，Lore 与 ItemFlags 会被自动忽略
+# （这两项由 UberEnchant 自动维护），不会因此误判为自定义物品。
 protect-custom-items: true
+
+# 清理 UberEnchant 发光残留。
+# UberEnchant 在添加 PDC 附魔时会调用 setEnchantmentGlintOverride(true) 让物品发光。
+# 当所有 UberEnchant PDC 附魔被清空后，开启此项会同步还原发光设置（设为 null）。
+# 需要 Paper 1.20.5+ 服务端 API；旧版本服务端会静默跳过，不影响 PDC 清理。
+# 选项：true=同步清理发光 / false=只清 PDC 数据，保留发光（可能仍有视觉残留）
+clean-uber-enchant-glint: true
+
+# Lore 行清理。
+# 某些插件（如 UberEnchant）在添加附魔时会自动写入 Lore 行（附魔名+等级），
+# 当附魔被清理后这些 Lore 不会自动消失，造成视觉残留。
+# 开启后，当物品被清理异常附魔时，会同步扫描 Lore 每一行，
+# 包含下方关键词的 Lore 行会被移除。
+# 注意：
+#   - 仅对被清理异常附魔的物品生效，不会处理未被清理的物品
+#   - 被识别为自定义物品(GUI道具)的物品不会被清理（因为 meta 不被修改）
+#   - 建议先用 /bugenchanttest 查看物品 Lore 内容，再配置关键词
+clean-lore: false
+
+# Lore 清理关键词列表（不区分大小写）
+# 检查 Lore 每一行的纯文本是否包含这些关键词
+# 例如 UberEnchant 的 Lore 行通常为 "附魔名 等级"（如 "Blindness III"、"失明 III"）
+# 可配置附魔名称、翻译键片段等作为关键词
+# 注意：关键词过短可能误删其他 Lore 行，建议使用足够特征性的字符串
+clean-lore-keywords:
+  - "这里替换你要清理的词条行中的关键词"
 
 # 提示消息配置
 messages:
-  actionbar: "帮你清理掉找到的异常附魔书啦~"
-  log-prefix: "[星玖姬]"
+  actionbar: "帮你清理掉找到的异常附魔啦~"
+  log-prefix: "[附魔清道夫]"

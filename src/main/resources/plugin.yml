@@ -1,22 +1,22 @@
 name: BugEnchantRemover
-version: '1.2'
+version: '1.4'
 main: top.miragedge.bugenchantremover.BugEnchantRemover
 api-version: '1.18'
 prefix: BugEnchantRemover
 authors: [ F.windEmiko ]
-description: 自动删除数据包带来的错误附魔书
+description: 自动删除数据包带来的错误附魔书（含 UberEnchant PDC 兼容）
 website: miragedge.top
 commands:
   bugenchantreload:
-    description: 重载插件配置
+    description: 重载插件配置（显示加载摘要）
     permission: bugenchantremover.reload
     usage: /<command>
   bugenchantscan:
-    description: 手动扫描背包中的异常附魔书
+    description: 手动扫描背包并清理异常附魔（含统计反馈）
     permission: bugenchantremover.scan
     usage: /<command>
   bugenchanttest:
-    description: 检测手中附魔书的显示名称
+    description: 检测手中物品的附魔详情（支持附魔书/普通物品/UberEnchant PDC）
     permission: bugenchantremover.test
     usage: /<command>
 

@@ -7,7 +7,7 @@
 
     <groupId>top.miragedge</groupId>
     <artifactId>BugEnchantRemover</artifactId>
-    <version>1.2</version>
+    <version>1.4</version>
     <packaging>jar</packaging>
 
     <properties>
@@ -35,7 +35,7 @@
     </dependencies>
 
     <build>
-        <finalName>[B][清除异常附魔]BugEnchantRemover</finalName>
+        <finalName>[B][附魔清道夫]BugEnchantRemover</finalName>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
